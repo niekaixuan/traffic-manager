@@ -37,10 +37,57 @@ func main() {
 		case "list":
 			listIfaces()
 			return
+		case "help", "-h", "--help", "-help":
+			printUsage()
+			return
 		}
 	}
 	// default: history browser
 	runHistory(os.Args[1:])
+}
+
+func printUsage() {
+	fmt.Print(`traffic-manager — 按应用统计本机网络流量（nethogs + vnStat）
+
+用法:
+  traffic-manager [命令] [选项]
+
+命令:
+  (默认)      打开历史用量 TUI，浏览今天/昨天/近7天/近30天/全部
+  daemon      后台采集：抓包并每 30 秒写入数据库（需要 root 或 capability）
+  live        实时监控 TUI：各进程当前的上下行速率（需要 root 或 capability）
+  query       输出文本报表，适合脚本或快速查看
+  list        列出本机网卡
+  help        显示本帮助
+
+选项:
+  daemon, live:
+    -i <网卡>     监听的网卡，逗号分隔（默认：所有 up 且非 loopback 的网卡）
+  daemon, 默认命令, query:
+    -db <路径>    数据库路径（默认 root: /var/lib/traffic-manager/traffic.db，
+                  普通用户: ~/.local/share/traffic-manager/traffic.db）
+  query:
+    -days <n>     统计最近 n 天（默认 1，即今天）
+
+典型用法:
+  sudo ./traffic-manager daemon        # 启动后台采集
+  ./traffic-manager                    # 查看历史用量（不需要 root）
+  ./traffic-manager query -days 7      # 最近 7 天各应用用量
+  sudo ./traffic-manager live          # 实时监控
+
+免 sudo 运行（一次性授权）:
+  sudo setcap cap_net_raw,cap_net_admin,cap_sys_ptrace=eip ./traffic-manager
+
+安装为系统服务:
+  sudo install -m755 traffic-manager /usr/local/bin/
+  sudo install -m644 traffic-manager.service /etc/systemd/system/
+  sudo systemctl enable --now traffic-manager
+
+历史 TUI 按键:
+  tab / ←→     切换时段    1-5    快捷选择时段
+  ↑/↓, j/k     移动选择    enter  应用明细（逐小时/逐天柱状图）
+  esc          返回        q      退出
+`)
 }
 
 // runHistory opens the DB read-only and shows the history TUI.
