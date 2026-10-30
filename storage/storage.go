@@ -25,11 +25,15 @@ func DefaultPath() string {
 	return filepath.Join(home, ".local", "share", "traffic-manager", "traffic.db")
 }
 
-// Open opens (or creates) the database.
+// Open opens (or creates) the database for writing (used by the daemon).
+// The directory and db files are made world-accessible so non-root readers
+// (TUI/query) can open the WAL side files.
 func Open(path string) (*DB, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o777); err != nil {
 		return nil, err
 	}
+	_ = os.Chmod(dir, 0o777) // best-effort: readers need to create -shm/-wal here
 	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(wal)", path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -43,7 +47,33 @@ func Open(path string) (*DB, error) {
 		db.Close()
 		return nil, err
 	}
+	d.chmodFiles()
 	return d, nil
+}
+
+// chmodFiles makes db side files world-accessible. WAL files are recreated
+// on checkpoint/restart, so this runs after every flush.
+func (d *DB) chmodFiles() {
+	var path string
+	if err := d.db.QueryRow(`PRAGMA database_list`).Scan(new(int), new(string), &path); err != nil {
+		return
+	}
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		_ = os.Chmod(path+suffix, 0o666)
+	}
+}
+
+// OpenReader opens the database for reading (used by the TUI and query).
+// The daemon keeps files world-writable, so a normal open works and lets
+// SQLite manage WAL recovery/shm as needed.
+func OpenReader(path string) (*DB, error) {
+	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=query_only(true)", path)
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	return &DB{db: db}, nil
 }
 
 func (d *DB) migrate() error {
@@ -113,7 +143,11 @@ func (d *DB) Flush(t time.Time, deltas []Delta) error {
 			return err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	d.chmodFiles()
+	return nil
 }
 
 // Prune deletes hourly rows older than hourlyKeep and daily rows older than dailyKeep.

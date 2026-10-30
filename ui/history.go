@@ -3,7 +3,6 @@ package ui
 
 import (
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -13,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"traffic-manager/app"
 	"traffic-manager/storage"
 )
 
@@ -48,7 +48,6 @@ type HistoryModel struct {
 	detail   string // app name in detail view
 	width    int
 	height   int
-	dbMtime  time.Time
 	err      error
 	quitting bool
 }
@@ -191,9 +190,6 @@ func (m *HistoryModel) refreshTable() {
 		})
 	}
 	m.table.SetRows(rows)
-	if fi, err := os.Stat(m.dbPath); err == nil {
-		m.dbMtime = fi.ModTime()
-	}
 }
 
 func (m *HistoryModel) refreshDetail() {
@@ -300,12 +296,13 @@ func (m HistoryModel) View() string {
 		totalRx += s.Rx
 		totalTx += s.Tx
 	}
-	fresh := "无数据"
-	if !m.dbMtime.IsZero() {
-		fresh = fmt.Sprintf("数据库更新于 %s 前", time.Since(m.dbMtime).Round(time.Second))
-		if time.Since(m.dbMtime) > 2*time.Minute {
-			fresh += "（daemon 未在运行？）"
-		}
+	var fresh string
+	if pid := app.DaemonPID(); pid > 0 {
+		fresh = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).
+			Render(fmt.Sprintf("daemon 运行中 (pid %d)", pid))
+	} else {
+		fresh = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).
+			Render("daemon 未运行，数据不会更新（启动: traffic-manager daemon）")
 	}
 	fmt.Fprintf(&b, "合计: ↓%s ↑%s 共 %s  ·  %d 个应用  ·  %s\n",
 		humanBytes(totalRx), humanBytes(totalTx), humanBytes(totalRx+totalTx),

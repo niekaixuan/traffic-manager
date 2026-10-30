@@ -102,7 +102,7 @@ func runHistory(args []string) {
 	dbPath := fs.String("db", storage.DefaultPath(), "database path")
 	_ = fs.Parse(args)
 
-	db, err := storage.Open(*dbPath)
+	db, err := storage.OpenReader(*dbPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open db: %v\n", err)
 		os.Exit(1)
@@ -123,7 +123,7 @@ func runQuery(args []string) {
 	days := fs.Int("days", 1, "how many past days to include")
 	_ = fs.Parse(args)
 
-	db, err := storage.Open(*dbPath)
+	db, err := storage.OpenReader(*dbPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open db: %v\n", err)
 		os.Exit(1)
