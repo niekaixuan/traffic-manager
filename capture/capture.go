@@ -217,9 +217,12 @@ func (s *Sniffer) record(table *procmon.Table, localIP netip.Addr, localPort uin
 		pid, ok = s.resolveRetry(localIP, localPort, remoteIP, remotePort, proto, now)
 	}
 	if !ok {
+		// Unattributed (short-lived socket, kernel traffic, etc.).
+		// Still count it so historical totals stay accurate.
 		s.mu.Lock()
 		s.dropped++
 		s.mu.Unlock()
+		s.Store.Record(-1, "(unknown)", "", remoteIP, remotePort, proto, n, rx, now)
 		return
 	}
 	p := table.Proc(pid)

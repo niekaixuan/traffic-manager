@@ -1,0 +1,16 @@
+[Unit]
+Description=traffic-manager per-app network usage collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/traffic-manager daemon
+Restart=on-failure
+RestartSec=5
+# 数据库位于 /var/lib/traffic-manager/traffic.db
+# 如希望普通用户能读取历史，可放宽：
+# UMask=0022
+
+[Install]
+WantedBy=multi-user.target

@@ -48,9 +48,17 @@ type Store struct {
 	apps   map[int32]*App
 	flows  map[FlowKey]*Flow
 	names  map[int32]string // pid -> name cache (survives process exit)
+	byApp  map[string]*AppTotals // cumulative per app name, never pruned
 	now    time.Time
 	alpha  float64 // EWMA smoothing factor
 	Total  App     // unnamed: global totals
+}
+
+// AppTotals is a cumulative counter for one app name.
+type AppTotals struct {
+	Name    string
+	RxBytes uint64
+	TxBytes uint64
 }
 
 func New() *Store {
@@ -58,8 +66,21 @@ func New() *Store {
 		apps:  make(map[int32]*App),
 		flows: make(map[FlowKey]*Flow),
 		names: make(map[int32]string),
+		byApp: make(map[string]*AppTotals),
 		alpha: 0.4,
 	}
+}
+
+// ByAppCumulative returns cumulative counters keyed by app name.
+// Used by the daemon to compute deltas for persistence.
+func (s *Store) ByAppCumulative() []AppTotals {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]AppTotals, 0, len(s.byApp))
+	for _, t := range s.byApp {
+		out = append(out, *t)
+	}
+	return out
 }
 
 // Record adds bytes for pid. dirRx = packet received by local process.
@@ -96,6 +117,21 @@ func (s *Store) Record(pid int32, name, exe string, remoteIP netip.Addr, remoteP
 		s.Total.TxPkts++
 	}
 	s.Total.LastSeen = t
+
+	appName := name
+	if appName == "" {
+		appName = "?"
+	}
+	bt := s.byApp[appName]
+	if bt == nil {
+		bt = &AppTotals{Name: appName}
+		s.byApp[appName] = bt
+	}
+	if dirRx {
+		bt.RxBytes += n
+	} else {
+		bt.TxBytes += n
+	}
 }
 
 func (s *Store) appLocked(pid int32, name, exe string) *App {
