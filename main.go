@@ -4,10 +4,13 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,6 +40,9 @@ func main() {
 		case "list":
 			listIfaces()
 			return
+		case "install":
+			runInstall()
+			return
 		case "help", "-h", "--help", "-help":
 			printUsage()
 			return
@@ -58,11 +64,14 @@ func printUsage() {
   live        实时监控 TUI：各进程当前的上下行速率（需要 root 或 capability）
   query       输出文本报表，适合脚本或快速查看
   list        列出本机网卡
+  install     安装二进制和 systemd 服务并立即启动（需要 root）
   help        显示本帮助
 
 选项:
   daemon, live:
     -i <网卡>     监听的网卡，逗号分隔（默认：所有 up 且非 loopback 的网卡）
+  daemon:
+    -background   脱离终端在后台运行（日志写到 <db目录>/daemon.log）
   daemon, 默认命令, query:
     -db <路径>    数据库路径（默认 root: /var/lib/traffic-manager/traffic.db，
                   普通用户: ~/.local/share/traffic-manager/traffic.db）
@@ -70,18 +79,15 @@ func printUsage() {
     -days <n>     统计最近 n 天（默认 1，即今天）
 
 典型用法:
-  sudo ./traffic-manager daemon        # 启动后台采集
-  ./traffic-manager                    # 查看历史用量（不需要 root）
-  ./traffic-manager query -days 7      # 最近 7 天各应用用量
-  sudo ./traffic-manager live          # 实时监控
+  sudo ./traffic-manager daemon              # 前台运行采集
+  sudo ./traffic-manager daemon -background  # 后台运行采集
+  ./traffic-manager                          # 查看历史用量（不需要 root）
+  ./traffic-manager query -days 7            # 最近 7 天各应用用量
+  sudo ./traffic-manager live                # 实时监控
+  sudo ./traffic-manager install             # 装成 systemd 服务，开机自启
 
 免 sudo 运行（一次性授权）:
   sudo setcap cap_net_raw,cap_net_admin,cap_sys_ptrace=eip ./traffic-manager
-
-安装为系统服务:
-  sudo install -m755 traffic-manager /usr/local/bin/
-  sudo install -m644 traffic-manager.service /etc/systemd/system/
-  sudo systemctl enable --now traffic-manager
 
 历史 TUI 按键:
   tab / ←→     切换时段    1-5    快捷选择时段
@@ -163,7 +169,13 @@ func runDaemon(args []string) {
 	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
 	ifaceFlag := fs.String("i", "", "comma-separated interfaces (default: all up, non-loopback)")
 	dbPath := fs.String("db", storage.DefaultPath(), "database path")
+	bg := fs.Bool("background", false, "detach and run in the background")
 	_ = fs.Parse(args)
+
+	if *bg {
+		runDaemonBackground(*ifaceFlag, *dbPath)
+		return
+	}
 
 	if !hasNetRaw() {
 		fmt.Fprintln(os.Stderr, "daemon needs root or CAP_NET_RAW:")
@@ -198,6 +210,128 @@ func runDaemon(args []string) {
 	if err := app.RunDaemon(ctx, mon, db); err != nil && err != context.Canceled {
 		log.Printf("daemon: %v", err)
 	}
+}
+
+// runDaemonBackground re-executes the daemon detached from the terminal
+// (new session, stdio redirected to a log file) and exits.
+func runDaemonBackground(ifaceFlag, dbPath string) {
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	exe, _ = filepath.Abs(exe)
+
+	logDir := filepath.Dir(dbPath)
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	logPath := filepath.Join(logDir, "daemon.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	defer logFile.Close()
+
+	daemonArgs := []string{"daemon", "-db", dbPath}
+	if ifaceFlag != "" {
+		daemonArgs = append(daemonArgs, "-i", ifaceFlag)
+	}
+	devNull, _ := os.Open(os.DevNull)
+	defer devNull.Close()
+
+	attr := &os.ProcAttr{
+		Files: []*os.File{devNull, logFile, logFile},
+		Sys:   &syscall.SysProcAttr{Setsid: true},
+	}
+	proc, err := os.StartProcess(exe, append([]string{exe}, daemonArgs...), attr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	pid := proc.Pid
+	_ = proc.Release()
+	fmt.Printf("daemon running in background (pid %d)\n  db:  %s\n  log: %s\n",
+		pid, dbPath, logPath)
+	fmt.Printf("stop with: kill %d\n", pid)
+}
+
+// runInstall installs the binary and a systemd unit, then enables it.
+func runInstall() {
+	if os.Geteuid() != 0 {
+		fmt.Fprintln(os.Stderr, "install needs root: sudo ./traffic-manager install")
+		os.Exit(1)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	exe, _ = filepath.Abs(exe)
+
+	const binDst = "/usr/local/bin/traffic-manager"
+	src, err := os.Open(exe)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	defer src.Close()
+	tmp := binDst + ".tmp"
+	dst, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		dst.Close()
+		os.Remove(tmp)
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	dst.Close()
+	if err := os.Rename(tmp, binDst); err != nil {
+		os.Remove(tmp)
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("installed", binDst)
+
+	unit := `[Unit]
+Description=traffic-manager per-app network usage collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/traffic-manager daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+`
+	const unitPath = "/etc/systemd/system/traffic-manager.service"
+	if err := os.WriteFile(unitPath, []byte(unit), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("installed", unitPath)
+
+	for _, args := range [][]string{
+		{"daemon-reload"},
+		{"enable", "--now", "traffic-manager"},
+	} {
+		cmd := exec.Command("systemctl", args...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "systemctl %s: %v\n", strings.Join(args, " "), err)
+			os.Exit(1)
+		}
+	}
+	fmt.Println("service enabled and started; check: systemctl status traffic-manager")
 }
 
 // runLive is the original realtime TUI.

@@ -23,10 +23,11 @@ go build -o traffic-manager .
 
 ```sh
 # 1. 启动采集（需要 root 或 capability）
-sudo ./traffic-manager daemon
+sudo ./traffic-manager daemon                # 前台运行
+sudo ./traffic-manager daemon -background    # 脱离终端后台运行，日志在 <db目录>/daemon.log
 # 或授权后免 sudo：
 sudo setcap cap_net_raw,cap_net_admin,cap_sys_ptrace=eip ./traffic-manager
-./traffic-manager daemon
+./traffic-manager daemon -background
 
 # 2. 查看历史 TUI（不需要 root）
 ./traffic-manager
@@ -40,6 +41,7 @@ sudo ./traffic-manager live
 # 其它
 ./traffic-manager daemon -i eth0,lo   # 指定网卡
 ./traffic-manager -db /path/x.db      # 指定数据库
+./traffic-manager help                # 完整帮助
 ```
 
 默认数据库位置：root 为 `/var/lib/traffic-manager/traffic.db`，普通用户为
@@ -49,11 +51,12 @@ sudo ./traffic-manager live
 ## 安装为系统服务
 
 ```sh
-sudo install -m755 traffic-manager /usr/local/bin/
-sudo install -m644 traffic-manager.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now traffic-manager
+sudo ./traffic-manager install
 ```
+
+自动完成：复制二进制到 `/usr/local/bin/`、写入 systemd unit、`enable --now` 启动。
+之后用 `systemctl status traffic-manager` 查看状态。
+数据库位于 `/var/lib/traffic-manager/traffic.db`，普通用户可直接读取历史。
 
 ## 历史 TUI 按键
 
