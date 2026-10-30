@@ -297,7 +297,7 @@ func (m HistoryModel) View() string {
 		totalTx += s.Tx
 	}
 	var fresh string
-	if pid := app.DaemonPID(); pid > 0 {
+	if pid := app.DaemonPID(m.dbPath); pid > 0 {
 		fresh = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).
 			Render(fmt.Sprintf("daemon 运行中 (pid %d)", pid))
 	} else {
