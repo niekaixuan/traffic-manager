@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"traffic-manager/app"
 	"traffic-manager/storage"
@@ -302,11 +303,12 @@ func (m HistoryModel) View() string {
 			Render(fmt.Sprintf("daemon 运行中 (pid %d)", pid))
 	} else {
 		fresh = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).
-			Render("daemon 未运行，数据不会更新（启动: traffic-manager daemon）")
+			Render("daemon 未运行（启动: traffic-manager daemon）")
 	}
-	fmt.Fprintf(&b, "合计: ↓%s ↑%s 共 %s  ·  %d 个应用  ·  %s\n",
+	summary := fmt.Sprintf("合计: ↓%s ↑%s 共 %s  ·  %d 个应用  ·  %s",
 		humanBytes(totalRx), humanBytes(totalTx), humanBytes(totalRx+totalTx),
 		len(m.sums), fresh)
+	b.WriteString(ansi.Truncate(summary, max(m.width, 1), "…") + "\n")
 	if m.err != nil {
 		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("196")).
 			Render("error: "+m.err.Error()) + "\n")
